@@ -3,10 +3,15 @@
 # run_benchmark.sh — Launch the GPU benchmark
 # ============================================================================
 # Usage:
-#   ./run_benchmark.sh              # All GPUs (auto-detected), default settings
+#   ./run_benchmark.sh              # All GPUs, default settings
 #   ./run_benchmark.sh --single     # Single GPU mode
-#   ./run_benchmark.sh --full       # Full ~30GB dataset (slower)
-#   ./run_benchmark.sh --disk       # Write data to disk, benchmark with I/O
+#   ./run_benchmark.sh --full       # Full ~30GB dataset
+#   ./run_benchmark.sh --disk       # Benchmark with disk I/O
+#
+# All other flags are passed directly to benchmark.py:
+#   ./run_benchmark.sh --disk --batch-size 64 --d-model 1024 --nhead 16
+#
+# Run 'python3 benchmark.py --help' for the full list of benchmark flags.
 # ============================================================================
 set -euo pipefail
 
@@ -14,34 +19,35 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BENCHMARK="$SCRIPT_DIR/benchmark.py"
 RESULTS_DIR="$SCRIPT_DIR/results"
 
-# Defaults
-NUM_GPUS=""  # auto-detect
-BATCH_SIZE=128
-SEQ_LEN=256
-NUM_SAMPLES=3750000   # ~14GB — fast enough for benchmarking
-EPOCHS=3
-WARMUP=1
-EXTRA_ARGS=""
+# Shell-level flags
 MODE="multi"
+NUM_GPUS=""
 DATA_DIR=""
+FULL=false
 
-# Parse arguments
+# Collect all benchmark.py arguments (passed through as-is)
+BENCH_ARGS=()
+
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --single)     MODE="single"; NUM_GPUS=1; shift ;;
-        --batch-size) BATCH_SIZE="$2"; shift 2 ;;
-        --full)       NUM_SAMPLES=7500000; shift ;;  # ~28GB — closer to real 30GB
-        --epochs)     EPOCHS="$2"; shift 2 ;;
-        --no-amp)     EXTRA_ARGS="$EXTRA_ARGS --no-amp"; shift ;;
-        --disk)       DATA_DIR="$SCRIPT_DIR/data"; shift ;;
-        --data-dir)   DATA_DIR="$2"; shift 2 ;;
+        --single)   MODE="single"; NUM_GPUS=1; shift ;;
+        --disk)     DATA_DIR="$SCRIPT_DIR/data"; shift ;;
+        --data-dir) DATA_DIR="$2"; shift 2 ;;
+        --full)     FULL=true; shift ;;
         --help)
-            echo "Usage: $0 [--single] [--batch-size N] [--full] [--epochs N] [--no-amp] [--disk] [--data-dir PATH]"
-            echo "Extra flags (e.g. --d-model, --nhead, --num-encoder-layers) are passed through to benchmark.py"
+            echo "Usage: $0 [--single] [--full] [--disk] [--data-dir PATH] [benchmark.py flags...]"
+            echo ""
+            echo "Shell flags:"
+            echo "  --single          Force single-GPU mode"
+            echo "  --full            Use ~30GB dataset (7.5M samples)"
+            echo "  --disk            Write dataset to disk for I/O benchmarking (uses ./data/)"
+            echo "  --data-dir PATH   Like --disk but with a custom path"
+            echo ""
+            echo "All other flags are passed through to benchmark.py."
+            echo "Run 'python3 benchmark.py --help' for the full list."
             exit 0 ;;
         *)
-            # Pass unrecognised flags through to benchmark.py
-            EXTRA_ARGS="$EXTRA_ARGS $1"; shift ;;
+            BENCH_ARGS+=("$1"); shift ;;
     esac
 done
 
@@ -74,35 +80,25 @@ echo ""
 # Ensure output dir
 mkdir -p "$RESULTS_DIR"
 
-# Disk dataset flag
-if [ -n "$DATA_DIR" ]; then
-    EXTRA_ARGS="$EXTRA_ARGS --data-dir $DATA_DIR"
+# Append shell-managed flags to benchmark args
+if [ "$FULL" = true ]; then
+    BENCH_ARGS+=(--num-samples 7500000)
 fi
+if [ -n "$DATA_DIR" ]; then
+    BENCH_ARGS+=(--data-dir "$DATA_DIR")
+fi
+BENCH_ARGS+=(--output-dir "$RESULTS_DIR")
 
 # Run
 if [ "$MODE" = "single" ] || [ "$NUM_GPUS" -eq 1 ]; then
     echo ">>> Running single-GPU benchmark..."
-    python3 "$BENCHMARK" \
-        --batch-size "$BATCH_SIZE" \
-        --seq-len "$SEQ_LEN" \
-        --num-samples "$NUM_SAMPLES" \
-        --epochs "$EPOCHS" \
-        --warmup-epochs "$WARMUP" \
-        --output-dir "$RESULTS_DIR" \
-        $EXTRA_ARGS
+    python3 "$BENCHMARK" "${BENCH_ARGS[@]}"
 else
     echo ">>> Running ${NUM_GPUS}-GPU DDP benchmark via torchrun..."
     torchrun \
         --nproc_per_node="$NUM_GPUS" \
         --standalone \
-        "$BENCHMARK" \
-        --batch-size "$BATCH_SIZE" \
-        --seq-len "$SEQ_LEN" \
-        --num-samples "$NUM_SAMPLES" \
-        --epochs "$EPOCHS" \
-        --warmup-epochs "$WARMUP" \
-        --output-dir "$RESULTS_DIR" \
-        $EXTRA_ARGS
+        "$BENCHMARK" "${BENCH_ARGS[@]}"
 fi
 
 echo ""
