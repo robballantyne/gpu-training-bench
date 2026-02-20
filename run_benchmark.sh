@@ -37,9 +37,11 @@ while [[ $# -gt 0 ]]; do
         --data-dir)   DATA_DIR="$2"; shift 2 ;;
         --help)
             echo "Usage: $0 [--single] [--batch-size N] [--full] [--epochs N] [--no-amp] [--disk] [--data-dir PATH]"
+            echo "Extra flags (e.g. --d-model, --nhead, --num-encoder-layers) are passed through to benchmark.py"
             exit 0 ;;
         *)
-            echo "Unknown option: $1"; exit 1 ;;
+            # Pass unrecognised flags through to benchmark.py
+            EXTRA_ARGS="$EXTRA_ARGS $1"; shift ;;
     esac
 done
 
